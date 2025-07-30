@@ -4,6 +4,7 @@ from typing import List
 import secrets
 import os
 from dotenv import load_dotenv
+from model import ask_model
 load_dotenv()
 
 
@@ -28,6 +29,8 @@ def run(
     token = authorization.split(" ")[1]
     if not secrets.compare_digest(token, API_KEY):
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid or missing API key")
+    
+    
 
     dummy_answers = [
         "A grace period of thirty days is provided for premium payment after the due date to renew or continue the policy without losing continuity benefits.",
