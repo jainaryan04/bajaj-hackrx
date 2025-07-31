@@ -29,7 +29,7 @@ def ask_model(pdf_url, questions):
     answers=[]
     for q in questions:
         messages=[
-            {"role":"system", "content":"You are a helpful assistant."},
+            {"role":"system", "content":"You will be given a full document, answer the question asked by the user in a single line."},
             {"role":"user", "content":f"Document:\n{full_text}\n\nQuestion: {q}"}
         ]
         try:
