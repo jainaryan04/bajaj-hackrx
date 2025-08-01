@@ -21,21 +21,7 @@ class RunResponse(BaseModel):
 @app.post("/hackrx/run", response_model=RunResponse)
 def run(
     data: RunRequest,
-    authorization: str = Header(...)
-):
-    if not authorization.startswith("Bearer "):
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED, 
-            detail="Invalid token format. Must be 'Bearer <token>'."
-        )
-
-    token = authorization.split(" ")[1]
-    if not secrets.compare_digest(token, API_KEY):
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED, 
-            detail="Invalid or missing API key"
-        )
-    
+):  
     try:
         answers = ask_model(pdf_url=data.documents, questions=data.questions)
         return {"answers": answers}
