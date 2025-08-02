@@ -1,14 +1,13 @@
 import os
-import fitz  
+import fitz
 import requests
 from dotenv import load_dotenv
-from openai import OpenAI
 from langchain.text_splitter import RecursiveCharacterTextSplitter
-from langchain.embeddings import OpenAIEmbeddings
-from langchain.vectorstores import FAISS
-from langchain.schema import Document
+from langchain_openai import OpenAIEmbeddings, ChatOpenAI
+from langchain_community.vectorstores import FAISS
+from langchain_core.documents import Document
 from langchain.chains import RetrievalQA
-from langchain.chat_models import ChatOpenAI
+
 
 def ask_model(pdf_url, questions):
     load_dotenv()

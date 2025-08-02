@@ -1,3 +1,5 @@
+langchain
+langchain-community
 fastapi
 uvicorn[standard]
 python-dotenv
@@ -5,3 +7,7 @@ pydantic
 PyMuPDF
 requests
 openai
+tiktoken
+faiss-gpu
+langchain-openai
+numpy<2
