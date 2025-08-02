@@ -8,6 +8,6 @@ PyMuPDF
 requests
 openai
 tiktoken
-faiss-gpu
+faiss-cpu
 langchain-openai
 numpy<2
