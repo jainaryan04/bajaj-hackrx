@@ -6,7 +6,7 @@ from openai import OpenAI
 
 def ask_model(pdf_url, questions):
     load_dotenv()
-    api_key=os.getenv("GEMINI_API_KEY")
+    api_key=os.getenv("OPENAI_API_KEY")
 
     response=requests.get(pdf_url)
     if response.status_code!=200:
@@ -23,7 +23,6 @@ def ask_model(pdf_url, questions):
 
     client=OpenAI(
         api_key=api_key,
-        base_url="https://generativelanguage.googleapis.com/v1beta/openai/"
     )
 
     answers=[]
@@ -34,7 +33,7 @@ def ask_model(pdf_url, questions):
         ]
         try:
             response=client.chat.completions.create(
-                model="gemini-2.5-flash",
+                model="gpt-4o-mini",
                 messages=messages
             )
             answers.append(response.choices[0].message.content.strip())
