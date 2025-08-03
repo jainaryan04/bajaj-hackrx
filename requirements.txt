@@ -12,3 +12,4 @@ faiss-cpu
 langchain-openai
 numpy<2
 psutil
+rank_bm25
