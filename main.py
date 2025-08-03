@@ -26,7 +26,7 @@ class RunResponse(BaseModel):
     answers: List[str]
 
 @app.post("/hackrx/run", response_model=RunResponse)
-def run(
+async def run(
     data: RunRequest,
     authorization: str = Header(...)
 ):
@@ -47,7 +47,7 @@ def run(
         logging.info(f"Received document URL: {data.documents}")
         logging.info(f"Received questions: {data.questions}")
 
-        answers = ask_model(pdf_url=data.documents, questions=data.questions)
+        answers = await ask_model(pdf_url=data.documents, questions=data.questions)
 
         logging.info(f"Generated answers: {answers}")
 
