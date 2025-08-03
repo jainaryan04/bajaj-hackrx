@@ -19,6 +19,7 @@ from langchain.prompts import (
 )
 import asyncio
 from langchain.retrievers import BM25Retriever, EnsembleRetriever
+import httpx
 process = psutil.Process(os.getpid())
 
 def log_memory(stage):
@@ -44,12 +45,15 @@ async def ask_model(pdf_url, questions):
 
     log_memory("Start")
 
-    response = requests.get(pdf_url)
-    response.raise_for_status()
+    async with httpx.AsyncClient() as client:
+        response = await client.get(pdf_url)
+        response.raise_for_status()
+        content = response.content
+
 
     tmp_path = f"temp_{uuid.uuid4().hex}.pdf"
     with open(tmp_path, "wb") as f:
-        f.write(response.content)
+        f.write(content)
 
     with fitz.open(tmp_path) as doc:
         full_text = "".join(page.get_text() for page in doc)
