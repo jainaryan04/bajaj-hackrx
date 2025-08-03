@@ -4,6 +4,7 @@ import requests
 import gc
 import psutil
 import logging
+from fastapi import HTTPException
 from dotenv import load_dotenv
 from langchain.text_splitter import RecursiveCharacterTextSplitter
 from langchain_openai import OpenAIEmbeddings, ChatOpenAI
@@ -59,7 +60,12 @@ def ask_model(pdf_url, questions):
             answer = qa_chain.run(q).strip()
             answers.append(answer)
         except Exception as e:
-            answers.append(f"Error: {str(e)}")
+            logging.exception("AI or other error")
+            raise HTTPException(
+                status_code=500,
+                detail=f"Unexpected error: {str(e)}"
+    )
+
 
     del qa_chain, retriever, vectordb, embeddings, docs, full_text
     gc.collect()
