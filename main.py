@@ -51,7 +51,7 @@ async def run(
     try:
         # --- KEY CHANGE 2: Use the logger instance ---
 
-        answers = await ask_model(pdf_url=data.documents, questions=data.questions)
+        answers = await ask_model(file_url=data.documents, questions=data.questions)
 
         return {"answers": answers}
     

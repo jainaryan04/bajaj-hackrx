@@ -38,3 +38,5 @@ build/
 # OS and editor-specific
 *.swp
 *.swo
+
+*.json
