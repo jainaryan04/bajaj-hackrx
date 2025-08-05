@@ -1,35 +1,37 @@
 import os
-import fitz
+import fitz # PyMuPDF
 import gc
-import psutil
 import logging
-from fastapi import HTTPException
+import asyncio
+import httpx
 from dotenv import load_dotenv
+
 from langchain.text_splitter import RecursiveCharacterTextSplitter
 from langchain_openai import OpenAIEmbeddings, ChatOpenAI
 from langchain_community.vectorstores import FAISS
 from langchain_core.documents import Document
 from langchain.chains import RetrievalQA
-import uuid
-from langchain.prompts import (
-    SystemMessagePromptTemplate,
-    HumanMessagePromptTemplate,
-    ChatPromptTemplate
-)
-import asyncio
+from langchain.prompts import ChatPromptTemplate
 from langchain.retrievers import BM25Retriever, EnsembleRetriever
-import httpx
-import concurrent.futures
-process = psutil.Process(os.getpid())
 
-def log_memory(stage):
-    mem = process.memory_info().rss / 1024**2  # MB
-    logging.info(f"[Memory] {stage}: {mem:.2f} MB")
+# --- KEY CHANGE 1: Initialize all reusable objects globally, once on startup ---
+load_dotenv()
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s - %(levelname)s - %(message)s"
+)
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+if not OPENAI_API_KEY:
+    raise ValueError("FATAL: OPENAI_API_KEY environment variable not set.")
 
+# Reusable models
+EMBEDDINGS_MODEL = OpenAIEmbeddings(model="text-embedding-3-small", openai_api_key=OPENAI_API_KEY)
+LLM = ChatOpenAI(model="gpt-4o-mini", openai_api_key=OPENAI_API_KEY)
 
-async def ask_model(pdf_url, questions):
-    system_prompt = SystemMessagePromptTemplate.from_template(
-        "You are an AI assistant. Answer questions clearly and concisely in one or two sentences."
+# Reusable prompt for final answer generation
+FINAL_ANSWER_PROMPT = ChatPromptTemplate.from_messages([
+    ("system",
+      "You are an AI assistant. Answer questions clearly and concisely in one or two sentences."
         " Base your answers strictly on the provided context. If the answer is not explicitly stated"
         " but can be reasonably inferred, do so carefully. If the context does not support even an inferred answer,"
         " reply with: 'The provided document does not have the answer to the question.'"
@@ -41,45 +43,12 @@ async def ask_model(pdf_url, questions):
         "Example 2:\n"
         "Q: What is the waiting period for pre-existing diseases (PED) to be covered?\n"
         "A: There is a waiting period of thirty-six (36) months of continuous coverage from the first policy inception for pre-existing diseases and their direct complications to be covered.\n"
-    )
+    ),
+    ("human", "Context:\n{context}\n\nQuestion: {question}")
+])
 
-    human_prompt = HumanMessagePromptTemplate.from_template("Context:\n{context}\n\nQuestion: {question}")
-    chat_prompt = ChatPromptTemplate.from_messages([system_prompt, human_prompt])
-
-    load_dotenv()
-    api_key = os.getenv("OPENAI_API_KEY")
-
-    log_memory("Start")
-
-    async with httpx.AsyncClient() as client:
-        response = await client.get(pdf_url)
-        response.raise_for_status()
-        content = response.content
-
-    tmp_path = f"temp_{uuid.uuid4().hex}.pdf"
-    with open(tmp_path, "wb") as f:
-        f.write(content)
-    with fitz.open(tmp_path) as doc:
-        with concurrent.futures.ThreadPoolExecutor() as executor:
-            page_texts = list(executor.map(lambda p: p.get_text(), doc))
-        full_text = "".join(page_texts)
-    os.remove(tmp_path)
-
-    splitter = RecursiveCharacterTextSplitter(chunk_size=700, chunk_overlap=200)
-    docs = [Document(page_content=chunk) for chunk in splitter.split_text(full_text)]
-
-    embeddings = OpenAIEmbeddings(model="text-embedding-3-small", openai_api_key=api_key)
-    vectordb = FAISS.from_documents(docs, embedding=embeddings)
-
-    dense_retriever = vectordb.as_retriever(search_kwargs={"k": 7})
-    bm25_retriever = BM25Retriever.from_documents(docs)
-    bm25_retriever.k = 10
-    ensemble_retriever = EnsembleRetriever(retrievers=[dense_retriever, bm25_retriever], weights=[0.7, 0.3])
-
-    model_chat = ChatOpenAI(model="gpt-4o-mini", openai_api_key=api_key)
-
-    # Rewrite prompt (used only for better retrieval)
-    rewrite_prompt = ChatPromptTemplate.from_messages([
+# Reusable prompt and chain for query rewriting
+REWRITE_PROMPT = ChatPromptTemplate.from_messages([
         ("system", """You are an assistant that rewrites user questions to optimize them for retrieving relevant information from insurance or policy documents.
 
 Rewritten queries must:
@@ -93,36 +62,78 @@ Only return the rewritten query without explanations or extra formatting.
 """),
         ("human", "{question}")
     ])
-    rewrite_chain = rewrite_prompt | model_chat
+REWRITE_CHAIN = REWRITE_PROMPT | LLM
 
-    log_memory("Before answering")
+def process_pdf_and_create_retriever(pdf_content: bytes) -> EnsembleRetriever:
+    """Synchronous function to handle all CPU-bound processing for a PDF."""
+    # --- KEY CHANGE 2: Process PDF from in-memory bytes, not a temp file ---
+    with fitz.open(stream=pdf_content, filetype="pdf") as doc:
+        # --- KEY CHANGE 3: Simplified text extraction (threading is not beneficial here) ---
+        full_text = "".join(page.get_text() for page in doc)
 
-    async def get_final_answer(original_question):
-        try:
-            
-            rewrite_task = rewrite_chain.ainvoke({"question": original_question})
-            rewritten_question = (await rewrite_task).content.strip()
-            
-            retrieval_task = asyncio.to_thread(ensemble_retriever.get_relevant_documents, rewritten_question)
-            retrieved_docs = await retrieval_task
-            context = "\n\n".join(doc.page_content for doc in retrieved_docs)
+    if not full_text.strip():
+        raise ValueError("Could not extract text from the PDF.")
 
+    splitter = RecursiveCharacterTextSplitter(chunk_size=700, chunk_overlap=200)
+    docs = [Document(page_content=chunk) for chunk in splitter.split_text(full_text)]
+
+    vectordb = FAISS.from_documents(docs, EMBEDDINGS_MODEL)
+    
+    dense_retriever = vectordb.as_retriever(search_kwargs={"k": 7})
+    bm25_retriever = BM25Retriever.from_documents(docs)
+    bm25_retriever.k = 10
+    
+    return EnsembleRetriever(retrievers=[dense_retriever, bm25_retriever], weights=[0.7, 0.3])
+
+
+async def get_final_answer(original_question: str, retriever: EnsembleRetriever) -> str:
+    """Async pipeline to get an answer for a single question."""
+    try:
+        # 1. Rewrite the question for better retrieval
+        rewritten_question_response = await REWRITE_CHAIN.ainvoke({"question": original_question})
+        rewritten_question = rewritten_question_response.content.strip()
+        logging.info(f"Original: '{original_question}' -> Rewritten: '{rewritten_question}'")
         
-            final_prompt = chat_prompt.format_messages(context=context, question=original_question)
-            final_response = await model_chat.ainvoke(final_prompt)
+        # 2. Retrieve relevant documents using the rewritten question
+        retrieved_docs = await asyncio.to_thread(retriever.get_relevant_documents, rewritten_question)
+        context = "\n\n".join(doc.page_content for doc in retrieved_docs)
 
-            return final_response.content.strip()
-        except Exception as e:
-            logging.exception("AI or other error")
-            return f"[Error answering question: {str(e)}]"
+        # 3. Generate final answer using original question and retrieved context
+        final_prompt = FINAL_ANSWER_PROMPT.format_messages(context=context, question=original_question)
+        final_response = await LLM.ainvoke(final_prompt)
+        return final_response.content.strip()
 
-    # Run all Q&A tasks
-    answers = await asyncio.gather(*[get_final_answer(q) for q in questions])
+    except Exception as e:
+        logging.exception(f"Error processing question: {original_question}")
+        return f"[Error answering question: {str(e)}]"
 
-    # Cleanup
-    del ensemble_retriever, vectordb, embeddings, docs, full_text, dense_retriever, bm25_retriever
+
+async def ask_model(pdf_url: str, questions: list[str]) -> list[str]:
+    """Main function to orchestrate the RAG pipeline for a given PDF and questions."""
+    try:
+        logging.info(f"Received document URL: {pdf_url}")
+        logging.info(f"Received questions: {questions}")
+
+        async with httpx.AsyncClient() as client:
+            response = await client.get(pdf_url, timeout=30.0)
+            response.raise_for_status()
+            pdf_content = response.content
+    except httpx.RequestError as e:
+        return [f"[Error: Could not access the document at {pdf_url}]"] * len(questions)
+
+    try:
+        retriever = await asyncio.to_thread(process_pdf_and_create_retriever, pdf_content)
+    except Exception as e:
+        logging.error(f"Failed to process PDF from {pdf_url}: {e}")
+        return ["[Error: Failed to process the document.]"] * len(questions)
+    
+    # Run all question-answering tasks concurrently
+    tasks = [get_final_answer(q, retriever) for q in questions]
+    answers = await asyncio.gather(*tasks)
+    logging.info(f"answers: {answers}")
+
+    # Clean up the per-request retriever object
+    del retriever
     gc.collect()
-
-    log_memory("After cleanup")
 
     return answers
