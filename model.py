@@ -6,6 +6,8 @@ import asyncio
 import httpx
 from dotenv import load_dotenv
 
+import tempfile
+from pathlib import Path
 from langchain.text_splitter import RecursiveCharacterTextSplitter
 from langchain_openai import OpenAIEmbeddings, ChatOpenAI
 from langchain_community.vectorstores import FAISS
@@ -13,6 +15,10 @@ from langchain_core.documents import Document
 from langchain.chains import RetrievalQA
 from langchain.prompts import ChatPromptTemplate
 from langchain.retrievers import BM25Retriever, EnsembleRetriever
+from docx import Document as DocxDocument
+from urllib.parse import urlparse, unquote
+
+
 
 # --- KEY CHANGE 1: Initialize all reusable objects globally, once on startup ---
 load_dotenv()
@@ -64,11 +70,19 @@ Only return the rewritten query without explanations or extra formatting.
     ])
 REWRITE_CHAIN = REWRITE_PROMPT | LLM
 
+def extract_text_from_docx(docx_bytes: bytes) -> str:
+    with tempfile.NamedTemporaryFile(suffix=".docx", delete=False) as tmp:
+        tmp.write(docx_bytes)
+        tmp.flush()
+        doc = DocxDocument(tmp.name)
+        full_text = "\n".join([para.text for para in doc.paragraphs])
+    os.unlink(tmp.name)
+    return full_text
+
 def process_pdf_and_create_retriever(pdf_content: bytes) -> EnsembleRetriever:
     """Synchronous function to handle all CPU-bound processing for a PDF."""
     # --- KEY CHANGE 2: Process PDF from in-memory bytes, not a temp file ---
     with fitz.open(stream=pdf_content, filetype="pdf") as doc:
-        # --- KEY CHANGE 3: Simplified text extraction (threading is not beneficial here) ---
         full_text = "".join(page.get_text() for page in doc)
 
     if not full_text.strip():
@@ -108,31 +122,67 @@ async def get_final_answer(original_question: str, retriever: EnsembleRetriever)
         return f"[Error answering question: {str(e)}]"
 
 
-async def ask_model(pdf_url: str, questions: list[str]) -> list[str]:
-    """Main function to orchestrate the RAG pipeline for a given PDF and questions."""
-    try:
-        logging.info(f"Received document URL: {pdf_url}")
-        logging.info(f"Received questions: {questions}")
-
-        async with httpx.AsyncClient() as client:
-            response = await client.get(pdf_url, timeout=30.0)
-            response.raise_for_status()
-            pdf_content = response.content
-    except httpx.RequestError as e:
-        return [f"[Error: Could not access the document at {pdf_url}]"] * len(questions)
-
-    try:
-        retriever = await asyncio.to_thread(process_pdf_and_create_retriever, pdf_content)
-    except Exception as e:
-        logging.error(f"Failed to process PDF from {pdf_url}: {e}")
-        return ["[Error: Failed to process the document.]"] * len(questions)
+async def ask_model(file_url: str, questions: list[str]) -> list[str]:
+    """Main function to orchestrate the RAG pipeline for a PDF or a .pdf.zip archive."""
+    logging.info(f"Received file URL: {file_url}")
+    logging.info(f"Received questions: {questions}")
     
+    try:
+        async with httpx.AsyncClient() as client:
+            response = await client.get(file_url)
+            response.raise_for_status()
+            file_bytes = response.content
+    except httpx.RequestError as e:
+        logging.error(f"Failed to fetch file: {e}")
+        return [f"[Error: Could not access the file at {file_url}]"] * len(questions)
+
+    retriever = None
+    parsed_url = urlparse(file_url)
+    path = unquote(parsed_url.path).lower() 
+
+                      
+
+    if path.lower().endswith(".pdf"):
+        try:
+            retriever = await asyncio.to_thread(process_pdf_and_create_retriever, file_bytes)
+        except Exception as e:
+            logging.error(f"Failed to process PDF from {file_url}: {e}")
+            return ["[Error: Failed to process the PDF document.]"] * len(questions)
+        
+    elif path.lower().endswith(".docx"):
+        try:
+            full_text = await asyncio.to_thread(extract_text_from_docx, file_bytes)
+            if not full_text.strip():
+                raise ValueError("DOCX file contains no readable text.")
+
+            splitter = RecursiveCharacterTextSplitter(chunk_size=700, chunk_overlap=200)
+            docs = [Document(page_content=chunk) for chunk in splitter.split_text(full_text)]
+
+            vectordb = FAISS.from_documents(docs, EMBEDDINGS_MODEL)
+            dense_retriever = vectordb.as_retriever(search_kwargs={"k": 7})
+            bm25_retriever = BM25Retriever.from_documents(docs)
+            bm25_retriever.k = 10
+            retriever = EnsembleRetriever(retrievers=[dense_retriever, bm25_retriever], weights=[0.7, 0.3])
+        except Exception as e:
+            logging.exception("Failed to process DOCX file")
+            return ["[Error: Could not process DOCX document.]"] * len(questions)
+        
+    elif path.endswith((".png", ".jpg", ".jpeg")):
+        return ["The provided document does not have the answer to the question."] * len(questions)
+               
+             
+
+
+    else:
+        return ["The provided document does not have the answer to the question."] * len(questions)
+
+
     # Run all question-answering tasks concurrently
     tasks = [get_final_answer(q, retriever) for q in questions]
     answers = await asyncio.gather(*tasks)
     logging.info(f"answers: {answers}")
 
-    # Clean up the per-request retriever object
+    # Clean up
     del retriever
     gc.collect()
 
