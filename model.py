@@ -1,7 +1,6 @@
 import os
 import fitz # PyMuPDF
 import gc
-import logging
 import asyncio
 import httpx
 from dotenv import load_dotenv
@@ -12,7 +11,6 @@ from langchain.text_splitter import RecursiveCharacterTextSplitter
 from langchain_openai import OpenAIEmbeddings, ChatOpenAI
 from langchain_community.vectorstores import FAISS
 from langchain_core.documents import Document
-from langchain.chains import RetrievalQA
 from langchain.prompts import ChatPromptTemplate
 from langchain.retrievers import BM25Retriever, EnsembleRetriever
 from docx import Document as DocxDocument
@@ -22,10 +20,7 @@ from urllib.parse import urlparse, unquote
 
 # --- KEY CHANGE 1: Initialize all reusable objects globally, once on startup ---
 load_dotenv()
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s - %(levelname)s - %(message)s"
-)
+
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 if not OPENAI_API_KEY:
     raise ValueError("FATAL: OPENAI_API_KEY environment variable not set.")
@@ -106,7 +101,6 @@ async def get_final_answer(original_question: str, retriever: EnsembleRetriever)
         # 1. Rewrite the question for better retrieval
         rewritten_question_response = await REWRITE_CHAIN.ainvoke({"question": original_question})
         rewritten_question = rewritten_question_response.content.strip()
-        logging.info(f"Original: '{original_question}' -> Rewritten: '{rewritten_question}'")
         
         # 2. Retrieve relevant documents using the rewritten question
         retrieved_docs = await asyncio.to_thread(retriever.get_relevant_documents, rewritten_question)
@@ -118,14 +112,11 @@ async def get_final_answer(original_question: str, retriever: EnsembleRetriever)
         return final_response.content.strip()
 
     except Exception as e:
-        logging.exception(f"Error processing question: {original_question}")
         return f"[Error answering question: {str(e)}]"
 
 
 async def ask_model(file_url: str, questions: list[str]) -> list[str]:
     """Main function to orchestrate the RAG pipeline for a PDF or a .pdf.zip archive."""
-    logging.info(f"Received file URL: {file_url}")
-    logging.info(f"Received questions: {questions}")
     
     try:
         async with httpx.AsyncClient() as client:
@@ -133,7 +124,6 @@ async def ask_model(file_url: str, questions: list[str]) -> list[str]:
             response.raise_for_status()
             file_bytes = response.content
     except httpx.RequestError as e:
-        logging.error(f"Failed to fetch file: {e}")
         return [f"[Error: Could not access the file at {file_url}]"] * len(questions)
 
     retriever = None
@@ -146,7 +136,6 @@ async def ask_model(file_url: str, questions: list[str]) -> list[str]:
         try:
             retriever = await asyncio.to_thread(process_pdf_and_create_retriever, file_bytes)
         except Exception as e:
-            logging.error(f"Failed to process PDF from {file_url}: {e}")
             return ["[Error: Failed to process the PDF document.]"] * len(questions)
         
     elif path.lower().endswith(".docx"):
@@ -164,7 +153,6 @@ async def ask_model(file_url: str, questions: list[str]) -> list[str]:
             bm25_retriever.k = 10
             retriever = EnsembleRetriever(retrievers=[dense_retriever, bm25_retriever], weights=[0.7, 0.3])
         except Exception as e:
-            logging.exception("Failed to process DOCX file")
             return ["[Error: Could not process DOCX document.]"] * len(questions)
         
     elif path.endswith((".png", ".jpg", ".jpeg")):
@@ -180,7 +168,6 @@ async def ask_model(file_url: str, questions: list[str]) -> list[str]:
     # Run all question-answering tasks concurrently
     tasks = [get_final_answer(q, retriever) for q in questions]
     answers = await asyncio.gather(*tasks)
-    logging.info(f"answers: {answers}")
 
     # Clean up
     del retriever

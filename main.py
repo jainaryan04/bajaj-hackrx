@@ -3,23 +3,17 @@ from pydantic import BaseModel
 from typing import List
 import secrets
 import os
-import logging
 from dotenv import load_dotenv
 from model import ask_model
 from openai import OpenAIError
 
 load_dotenv()
 
-# --- KEY CHANGE 1: Get the logger instance ---
-# Instead of basicConfig, we get the logger. This works with Uvicorn's logging.
-logger = logging.getLogger(__name__)
-
 
 app = FastAPI()
 API_KEY = os.getenv("API_KEY")
 if not API_KEY:
     # Use logger for critical startup errors
-    logger.critical("FATAL: API_KEY environment variable not set.")
     raise ValueError("API_KEY environment variable not set.")
 
 
@@ -57,14 +51,12 @@ async def run(
     
     except OpenAIError:
         # Use the logger for exceptions as well
-        logger.exception("OpenAI API error occurred.")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             # Corrected the error message typo
             detail="AI service error: An issue occurred with the OpenAI API. Check keys or service status."
         )
     except Exception as e:
-        logger.exception("An unexpected error occurred.")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"An unexpected error occurred: {str(e)}"
