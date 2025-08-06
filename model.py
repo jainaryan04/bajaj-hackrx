@@ -88,7 +88,7 @@ def process_pdf_and_create_retriever(pdf_content: bytes) -> EnsembleRetriever:
     if not full_text.strip():
         raise ValueError("Could not extract text from the PDF.")
 
-    splitter = RecursiveCharacterTextSplitter(chunk_size=700, chunk_overlap=200)
+    splitter = RecursiveCharacterTextSplitter(chunk_size=2000, chunk_overlap=300)
     docs = [Document(page_content=chunk) for chunk in splitter.split_text(full_text)]
 
     vectordb = FAISS.from_documents(docs, EMBEDDINGS_MODEL)
@@ -155,7 +155,7 @@ async def ask_model(file_url: str, questions: list[str]) -> list[str]:
             if not full_text.strip():
                 raise ValueError("DOCX file contains no readable text.")
 
-            splitter = RecursiveCharacterTextSplitter(chunk_size=700, chunk_overlap=200)
+            splitter = RecursiveCharacterTextSplitter(chunk_size=2000, chunk_overlap=300)
             docs = [Document(page_content=chunk) for chunk in splitter.split_text(full_text)]
 
             vectordb = FAISS.from_documents(docs, EMBEDDINGS_MODEL)
