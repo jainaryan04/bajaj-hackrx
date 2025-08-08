@@ -1,7 +1,6 @@
 import os
 import fitz  # PyMuPDF
 import gc
-import logging
 import asyncio
 import httpx
 import base64
@@ -25,7 +24,6 @@ from io import BytesIO
 
 # Load environment
 load_dotenv()
-logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 if not OPENAI_API_KEY:
@@ -94,7 +92,6 @@ async def get_final_answer(original_question: str, retriever: EnsembleRetriever)
     try:
         rewritten_question_response = await REWRITE_CHAIN.ainvoke({"question": original_question})
         rewritten_question = rewritten_question_response.content.strip()
-        logging.info(f"Original: '{original_question}' -> Rewritten: '{rewritten_question}'")
 
         retrieved_docs = await asyncio.to_thread(retriever.get_relevant_documents, rewritten_question)
         context = "\n\n".join(doc.page_content for doc in retrieved_docs)
@@ -104,13 +101,10 @@ async def get_final_answer(original_question: str, retriever: EnsembleRetriever)
         return final_response.content.strip()
 
     except Exception as e:
-        logging.exception(f"Error processing question: {original_question}")
         return f"[Error answering question: {str(e)}]"
 
 
 async def ask_model(file_url: str, questions: list[str]) -> list[str]:
-    logging.info(f"Received file URL: {file_url}")
-    logging.info(f"Received questions: {questions}")
 
     try:
         async with httpx.AsyncClient() as client:
@@ -118,7 +112,6 @@ async def ask_model(file_url: str, questions: list[str]) -> list[str]:
             response.raise_for_status()
             file_bytes = response.content
     except httpx.RequestError as e:
-        logging.error(f"Failed to fetch file: {e}")
         return [f"[Error: Could not access the file at {file_url}]"] * len(questions)
 
     retriever = None
@@ -130,7 +123,6 @@ async def ask_model(file_url: str, questions: list[str]) -> list[str]:
         try:
             retriever = await asyncio.to_thread(process_pdf_and_create_retriever, file_bytes)
         except Exception as e:
-            logging.error(f"Failed to process PDF: {e}")
             return ["[Error: Failed to process the PDF document.]"] * len(questions)
 
     # --- Handle DOCX ---
@@ -149,12 +141,10 @@ async def ask_model(file_url: str, questions: list[str]) -> list[str]:
             bm25_retriever.k = 10
             retriever = EnsembleRetriever(retrievers=[dense_retriever, bm25_retriever], weights=[0.7, 0.3])
         except Exception as e:
-            logging.exception("Failed to process DOCX file")
             return ["[Error: Could not process DOCX document.]"] * len(questions)
 
     # --- Handle Image Files (JPG, PNG, etc.) ---
     elif path.endswith((".png", ".jpg", ".jpeg", ".webp", ".bmp", ".tiff")):
-        logging.info("Processing image file with GPT-4o vision model.")
         try:
             # Convert image to base64
             b64_image = base64.b64encode(file_bytes).decode("utf-8")
@@ -174,11 +164,9 @@ async def ask_model(file_url: str, questions: list[str]) -> list[str]:
             responses = await asyncio.gather(*tasks)
             return [res.content.strip() for res in responses]
         except Exception as e:
-            logging.exception("Failed during image processing")
             return [f"[Error: Failed to process the image.]"] * len(questions)
         # --- Handle XLSX files ---
     elif path.endswith(".xlsx"):
-        logging.info("Processing XLSX file.")
         try:
             # Read Excel from memory
             df_dict = pd.read_excel(BytesIO(file_bytes), sheet_name=None)
@@ -200,7 +188,6 @@ async def ask_model(file_url: str, questions: list[str]) -> list[str]:
             bm25_retriever.k = 10
             retriever = EnsembleRetriever(retrievers=[dense_retriever, bm25_retriever], weights=[0.7, 0.3])
         except Exception as e:
-            logging.exception("Failed to process XLSX file")
             return ["[Error: Could not process XLSX document.]"] * len(questions)
 
     else:

@@ -13,7 +13,6 @@ load_dotenv()
 app = FastAPI()
 API_KEY = os.getenv("API_KEY")
 if not API_KEY:
-    # Use logger for critical startup errors
     raise ValueError("API_KEY environment variable not set.")
 
 
@@ -43,17 +42,14 @@ async def run(
         )
       
     try:
-        # --- KEY CHANGE 2: Use the logger instance ---
 
         answers = await ask_model(file_url=data.documents, questions=data.questions)
 
         return {"answers": answers}
     
     except OpenAIError:
-        # Use the logger for exceptions as well
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            # Corrected the error message typo
             detail="AI service error: An issue occurred with the OpenAI API. Check keys or service status."
         )
     except Exception as e:
